@@ -1,0 +1,83 @@
+name: Build Nupixel APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Locate project
+        run: |
+          if [ -f build.gradle.kts ]; then
+            DIR=.
+          else
+            ZIP=$(find . -maxdepth 2 -name "Nupixel*.zip" | sort -V | tail -n 1)
+            rm -rf nupixel_src
+            mkdir -p nupixel_src
+            unzip -q "$ZIP" -d nupixel_src
+            DIR=nupixel_src
+            if [ ! -f "$DIR/build.gradle.kts" ]; then
+              DIR=$(dirname "$(find nupixel_src -maxdepth 3 -name build.gradle.kts | head -n 1)")
+            fi
+          fi
+          echo "PROJECT_DIR=$DIR" >> $GITHUB_ENV
+          {
+            echo "### Project"
+            echo "zip: ${ZIP:-none (project in repo root)}"
+            grep versionName "$DIR/app/build.gradle.kts"
+            echo '```'
+            ls "$DIR/app/src/main/java/app/nupixel/data"
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Accept Android SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Build debug APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set +e
+          gradle assembleDebug --stacktrace > build.log 2>&1
+          code=$?
+          {
+            echo "### Build exit code: $code"
+            echo '```'
+            grep -E "^e: |Unresolved|FAILED" build.log | sed 's#file:///home/runner/work/[^/]*/[^/]*/##' | head -60
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
+          exit $code
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nupixel-debug-apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+
+      - name: Unit tests
+        if: success()
+        continue-on-error: true
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle testDebugUnitTest --stacktrace
+
+      - name: Upload full build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: ${{ env.PROJECT_DIR }}/build.log
